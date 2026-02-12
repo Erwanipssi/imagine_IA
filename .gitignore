@@ -1,0 +1,23 @@
+# Environnement
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+
+# Documentation interne
+docs
+cahier_des_charges.md
+
+# Dépendances
+node_modules/
+
+# Build
+dist/
+*.log
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,161 @@
+name: imagine-ai
+
+services:
+  # ─── MongoDB Replica Set ───────────────────────────────────────────────────
+  mongodb-0:
+    image: mongo:7
+    container_name: mongodb-0
+    restart: unless-stopped
+    command: mongod --replSet rs0 --bind_ip_all
+    environment:
+      MONGO_INITDB_DATABASE: imagine-ai
+    volumes:
+      - mongodb_0_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - app-net
+
+  mongodb-1:
+    image: mongo:7
+    container_name: mongodb-1
+    restart: unless-stopped
+    command: mongod --replSet rs0 --bind_ip_all
+    depends_on:
+      mongodb-0:
+        condition: service_healthy
+    volumes:
+      - mongodb_1_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - app-net
+
+  mongodb-2:
+    image: mongo:7
+    container_name: mongodb-2
+    restart: unless-stopped
+    command: mongod --replSet rs0 --bind_ip_all
+    depends_on:
+      mongodb-0:
+        condition: service_healthy
+    volumes:
+      - mongodb_2_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - app-net
+
+  mongo-init:
+    image: mongo:7
+    container_name: mongo-init
+    depends_on:
+      mongodb-0:
+        condition: service_healthy
+      mongodb-1:
+        condition: service_healthy
+      mongodb-2:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      bash -c "
+        echo 'Initialisation du replica set...' &&
+        mongosh mongodb://mongodb-0:27017 --eval \"
+          try {
+            var cfg = rs.conf();
+            if (cfg && cfg.members && cfg.members.length > 0) {
+              print('Replica set déjà initialisé');
+            } else { throw new Error('init'); }
+          } catch (e) {
+            rs.initiate({
+              _id: 'rs0',
+              members: [
+                { _id: 0, host: 'mongodb-0:27017', priority: 2 },
+                { _id: 1, host: 'mongodb-1:27017', priority: 1 },
+                { _id: 2, host: 'mongodb-2:27017', priority: 1 }
+              ]
+            });
+            print('Replica set initialisé.');
+          }
+        \" &&
+        echo 'Init terminé.'
+      "
+    networks:
+      - app-net
+
+  # ─── Ollama (IA) ──────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app-net
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      - ollama
+    restart: on-failure
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c", "sleep 10 && ollama pull llama3.2:1b"]
+    networks:
+      - app-net
+
+  # ─── Backend API ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: imagine-ai-backend
+    restart: unless-stopped
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGODB_URI: mongodb://mongodb-0:27017,mongodb-1:27017,mongodb-2:27017/imagine-ai?replicaSet=rs0
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2:1b
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+    networks:
+      - app-net
+
+  # ─── Frontend (nginx) ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: imagine-ai-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  mongodb_0_data:
+  mongodb_1_data:
+  mongodb_2_data:
+  ollama_data:
